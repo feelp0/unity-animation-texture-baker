@@ -1,15 +1,25 @@
-// Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel CSMain
 
-// Create a RenderTexture with enableRandomWrite flag and set it
-// with cs.SetTexture
-RWTexture2D<float4> Result;
-float3[,] frameVertices;
+RWTexture2D<float4> _Out;
+RWStructuredBuffer<float3> _RestPose;
+RWStructuredBuffer<float3> _VertexBuffer;
+int _Row;
 
-[numthreads(8,8,1)]
-void CSMain (uint3 id : SV_DispatchThreadID)
+[numthreads(64, 1, 1)]
+void CSMain(uint id : SV_DispatchThreadID)
 {
-    // TODO: insert actual code here!
+    float3 restPose = _RestPose[id];
+    float3 vertexPos = _VertexBuffer[id];
 
-    Result[id.xy] = float4(id.x & id.y, (id.x & 15)/15.0, (id.y & 15)/15.0, 0.0);
+    //this is not working
+    float3 distance = restPose - vertexPos;
+    float3 distanceRemap = (distance) * 0.5 + 0.5;
+
+    float2 uv = float2(id, _Row);
+
+    //right now i'm compressing in this stupid way.
+    //TODO: Find a way to compress the data in 0-1 withouth floating point precision issues.
+    float3 normVertexPos = (vertexPos.xyz / 8) * 0.5 + 0.5;
+
+    _Out[uv] = float4(distance.xyz, 0);
 }

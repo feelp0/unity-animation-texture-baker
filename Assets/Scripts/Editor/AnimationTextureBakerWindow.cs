@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 
 [ExecuteAlways]
 public class AnimationTextureBakerWindow : EditorWindow
@@ -15,6 +16,8 @@ public class AnimationTextureBakerWindow : EditorWindow
     List<Object> animations = new List<Object>();
     List<string> animationsNames = new List<string>();
     AnimationClip selectedAnimation = null;
+    List<AnimationClip> selectedAnimations = new List<AnimationClip>();
+    List<float> selectedAnimationsCompressions = new List<float>();
     SkinnedMeshRenderer selectedSkinnedMesh;
     int selectedAnimationIndex = 0;
 
@@ -30,6 +33,9 @@ public class AnimationTextureBakerWindow : EditorWindow
     private const string COMPUTE_SHADER_PATH = "Editor/Shaders/{0}";
     private const string COMPUTE_SHADER_NAME = "AnimationTextureBaker";
     ComputeShader computeBaker = null;
+
+    int selectedBakeOptionIndex = 0;
+    string[] bakeOptionsNames = new string[] { "GPU", "CPU" };
 
     private void OnGUI()
     {
@@ -55,10 +61,10 @@ public class AnimationTextureBakerWindow : EditorWindow
                     lockSelected = !lockSelected;
                 }
                 //Call on selection change when we untoggle lockSelected
-                if (EditorGUI.EndChangeCheck() && lockSelected == false)
-                {
-                    OnSelectionChange();
-                }
+                //if (EditorGUI.EndChangeCheck() && lockSelected == false)
+                //{
+                //    OnSelectionChange();
+                //}
                 string objName = selectedObject == null ? "N/A" : selectedObject.name;
                 EditorGUILayout.LabelField(string.Format(CURR_SELECT_LABEL, objName));
                 EditorGUI.BeginChangeCheck();
@@ -81,38 +87,90 @@ public class AnimationTextureBakerWindow : EditorWindow
                     {
                         selectedAnimation = animations[selectedAnimationIndex] as AnimationClip;
                     }
+                    if (GUILayout.Button("+"))
+                    {
+                        selectedAnimations.Add(selectedAnimation);
+                        selectedAnimationsCompressions.Add(animationCompression);
+                    }
                 }
             }
 
             animationCompression = EditorGUILayout.Slider("Clip compression: ", animationCompression, 0, 1);
 
             EditorGUILayout.Space(10);
+
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("Picked Animations: ");
+                    GUILayout.FlexibleSpace();
+                    EditorGUILayout.LabelField(selectedAnimations.Count.ToString());
+                }
+                for (int i = 0; i < selectedAnimations.Count; i++)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUI.enabled = false;
+                        EditorGUILayout.ObjectField(selectedAnimations[i], typeof(AnimationClip), false);
+                        GUI.enabled = true;
+                        selectedAnimationsCompressions[i] = EditorGUILayout.Slider(selectedAnimationsCompressions[i], 0, 1, GUILayout.MaxWidth(120));
+                        if (GUILayout.Button("-"))
+                        {
+                            selectedAnimations.RemoveAt(i);
+                            selectedAnimationsCompressions.RemoveAt(i);
+                        }
+                    }
+                }
+            }
+
+            EditorGUILayout.Space(10);
             //put this on change check
             if (selectedAnimation != null && selectedSkinnedMesh != null && selectedObject != null)
             {
-                int framesCount = (int)(selectedAnimation.length * selectedAnimation.frameRate * (1 - animationCompression));
+                int framesCount = 0;
+                for (int i = 0; i < selectedAnimations.Count; i++)
+                {
+                    framesCount += (int)(selectedAnimations[i].length * selectedAnimations[i].frameRate * (1 - selectedAnimationsCompressions[i]));
+                }
                 string expectedSize = string.Format("Expected size: {0}x{1}", selectedSkinnedMesh.sharedMesh.vertexCount, framesCount);
                 EditorGUILayout.LabelField(expectedSize);
+                EditorGUILayout.LabelField("Vertices: " + selectedSkinnedMesh.sharedMesh.vertexCount);
+                EditorGUILayout.LabelField("Total Frames: " + framesCount);
             }
 
             GUILayout.FlexibleSpace();
+            GUILayout.Label("Mode: ");
+            selectedBakeOptionIndex = EditorGUILayout.Popup(selectedBakeOptionIndex, bakeOptionsNames.ToArray());
+
             GUILayout.Label("Baker:");
             GUI.enabled = false;
             computeBaker = (ComputeShader)EditorGUILayout.ObjectField(computeBaker, typeof(ComputeShader), false);
             GUI.enabled = true;
             if (GUILayout.Button("Bake", GUILayout.Height(50)) && selectedObject != null && selectedAnimation != null && selectedSkinnedMesh != null)
             {
-                StartBake();
+                Bake();
             }
 
             GUILayout.Space(2.5f);
         }
     }
 
+    private void Bake()
+    {
+        if (selectedBakeOptionIndex == 0)
+        {
+            GPUBake();
+        }
+        else
+        {
+            CPUBake();
+        }
+    }
+
     private void Init()
     {
         string path = string.Format(COMPUTE_SHADER_PATH, COMPUTE_SHADER_NAME);
-        Debug.Log(path);
         computeBaker = Resources.Load<ComputeShader>(path);
         OnSelectionChange();
         initialized = true;
@@ -120,94 +178,137 @@ public class AnimationTextureBakerWindow : EditorWindow
 
     Texture2D tempVertexBuffer;
 
-    private void StartBake()
+    private void CPUBake()
     {
-        int framesCount = (int)(selectedAnimation.length * selectedAnimation.frameRate * (1 - animationCompression));
+        int framesCount = 0;
+        for (int i = 0; i < selectedAnimations.Count; i++)
+        {
+            framesCount += (int)(selectedAnimations[i].length * selectedAnimations[i].frameRate * (1 - selectedAnimationsCompressions[i]));
+        }
 
-        //For the time beeing idk about texture size, i just want it running. Atm I'll store everything in this one 
-        //TODO: Optimize
+        //int framesCount = (int)(selectedAnimation.length * selectedAnimation.frameRate * (1 - animationCompression));
+
+        ComputeBuffer restPoseBuffer = new ComputeBuffer(selectedMesh.vertexCount, sizeof(float) * 3);
+        restPoseBuffer.SetData(selectedMesh.vertices);
+        computeBaker.SetBuffer(0, "_RestPose", restPoseBuffer);
+
         tempVertexBuffer = new Texture2D(selectedSkinnedMesh.sharedMesh.vertexCount, framesCount,
             UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat,
             UnityEngine.Experimental.Rendering.TextureCreationFlags.None);
 
-
         Mesh bakedMesh = new Mesh();
 
-        for (int i = 0; i < framesCount; i++)
+        int rowAccumulation = 0;
+
+        for (int a = 0; a < selectedAnimations.Count; a++)
         {
-            float time = ((float)i / framesCount) * selectedAnimation.length;
-            selectedAnimation.SampleAnimation(selectedObject, time);
+            int currenAnimationFramesCount = (int)(selectedAnimations[a].length * selectedAnimations[a].frameRate * (1 - selectedAnimationsCompressions[a]));
 
-            //possible alternatives: save pos diff (paulo solution), save it in scrSpace and remap? probably won't work, 
-            selectedSkinnedMesh.BakeMesh(bakedMesh);
-            Debug.Log(bakedMesh.vertices[0]);
+            for (int i = 0; i < currenAnimationFramesCount; i++)
+            {
+                float time = ((float)i / currenAnimationFramesCount) * selectedAnimations[a].length;
+                selectedAnimation.SampleAnimation(selectedObject, time);
 
-            FillTextureRow(i, bakedMesh.vertices);
+                selectedSkinnedMesh.BakeMesh(bakedMesh);
+
+                FillTextureRow(i + rowAccumulation, bakedMesh.vertices);
+            }
+
+            rowAccumulation += currenAnimationFramesCount;
         }
 
-        //TODO: find why this is not overwriting. Destroying and re-create works but shader loses refs to texture.
-        //maybe i can try copy the GUID?
-        string name = string.Format("{0}_{1}_AnimationTexture.asset", selectedObject.name, selectedAnimation.name);
-        if (File.Exists(folderPath + name))
-        {
-            AssetDatabase.DeleteAsset(folderPath + name);
-        }
-        AssetDatabase.CreateAsset(tempVertexBuffer, folderPath + name);
-
-        AssetDatabase.SaveAssets();
-        EditorUtility.SetDirty(WindowInstance);
-
-        //byte[] imageData = tempVertexBuffer.EncodeToEXR();
-        //File.WriteAllBytes(folderPath + "bakedResult.asset", imageData);
+        SaveImage();
     }
 
-    RenderTexture myLittleBuffer;
-    private const string INTERNAL_COMPUTE_TEXTURE_NAME = "Result";
+    private const string INTERNAL_COMPUTE_TEXTURE_NAME = "_Out";
 
     void GPUBake()
     {
-        int framesCount = (int)(selectedAnimation.length * selectedAnimation.frameRate * (1 - animationCompression));
+        int totalFrames = 0;
+        for (int i = 0; i < selectedAnimations.Count; i++)
+        {
+            totalFrames += (int)(selectedAnimations[i].length * selectedAnimations[i].frameRate * (1 - selectedAnimationsCompressions[i]));
+        }
 
-        myLittleBuffer = new RenderTexture(selectedSkinnedMesh.sharedMesh.vertexCount, framesCount, 0,
-            UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat);
+        //create RenderTexture
+        GraphicsFormat textureFormat = GraphicsFormat.R16G16B16A16_SFloat;
+        RenderTexture rt = new RenderTexture(selectedSkinnedMesh.sharedMesh.vertexCount, totalFrames, 0, textureFormat);
+        rt.enableRandomWrite = true;
 
-        computeBaker.SetTexture(0, INTERNAL_COMPUTE_TEXTURE_NAME, myLittleBuffer);
+        computeBaker.SetTexture(0, INTERNAL_COMPUTE_TEXTURE_NAME, rt);
 
+
+        if (selectedMesh == null)
+        {
+            Debug.LogError("No Mesh Found on selected Assets");
+            return;
+        }
+
+        //Set rest pose Data
+        ComputeBuffer restPoseBuffer = new ComputeBuffer(selectedMesh.vertexCount, sizeof(float) * 3);
+        restPoseBuffer.SetData(selectedMesh.vertices);
+        computeBaker.SetBuffer(0, "_RestPose", restPoseBuffer);
+
+        ComputeBuffer positionsBuffer = new ComputeBuffer(selectedSkinnedMesh.sharedMesh.vertexCount, sizeof(float) * 3);
 
         Mesh bakedMesh = new Mesh();
 
-        Vector3[,] framesVertices = new Vector3[selectedSkinnedMesh.sharedMesh.vertexCount, framesCount];
-        //List<Vector3[]> framesVertices = new List<Vector3[]>();
-        //TODO: should i dispatch every row or store and dispatch only once?
-        //Porbably dispatching per row is a better idea
+        int rowAccumulation = 0;
 
-        for (int i = 0; i < framesCount; i++)
+        for (int a = 0; a < selectedAnimations.Count; a++)
         {
-            float time = ((float)i / framesCount) * selectedAnimation.length;
-            selectedAnimation.SampleAnimation(selectedObject, time);
+            int currenAnimationFramesCount = (int)(selectedAnimations[a].length * selectedAnimations[a].frameRate * (1 - selectedAnimationsCompressions[a]));
 
-            selectedSkinnedMesh.BakeMesh(bakedMesh);
+            for (int i = 0; i < currenAnimationFramesCount; i++)
+            {
+                float time = ((float)i / currenAnimationFramesCount) * selectedAnimations[a].length;
+                selectedAnimations[a].SampleAnimation(selectedObject, time);
 
-            //FillTextureRow(i, bakedMesh.vertices);
-            //framesVertices.Add()
+                selectedSkinnedMesh.BakeMesh(bakedMesh);
+
+                positionsBuffer.SetData(bakedMesh.vertices);
+                computeBaker.SetBuffer(0, "_VertexBuffer", positionsBuffer);
+                computeBaker.SetInt("_Row", i + rowAccumulation);
+                computeBaker.Dispatch(0, bakedMesh.vertexCount, 1, 1);
+            }
+
+            rowAccumulation += currenAnimationFramesCount;
         }
 
-        //computeBaker.SetVectorArray()
-        //computeBaker.Dispatch()
+        //Read from render texture and store to a tex2D
+        RenderTexture.active = rt;
+        tempVertexBuffer = new Texture2D(rt.width, rt.height, textureFormat, TextureCreationFlags.None);
+        tempVertexBuffer.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+        RenderTexture.active = null;
+
+        SaveImage();
+
+        positionsBuffer.Release();
+        positionsBuffer = null;
+        restPoseBuffer.Release();
+        restPoseBuffer = null;
     }
 
-    //TODO: Once finished merge GPU and CPU bake in this only function and switch based on the input bake type
-    void Bake()
+    void SaveImage()
     {
-        //GetFrames
+        string extension = ".asset";
+        string name = string.Format("{0}_{1}_AnimationTexture" + extension, selectedObject.name, selectedAnimation.name);
+        if (File.Exists(folderPath + name + extension))
+        {
+            Object currentTex = AssetDatabase.LoadAssetAtPath<Object>(folderPath + name);
+            EditorUtility.CopySerialized(tempVertexBuffer, currentTex);
+        }
+        else
+        {
+            AssetDatabase.CreateAsset(tempVertexBuffer, folderPath + name);
+        }
 
-        //Switch
+        AssetDatabase.SaveAssets();
 
-        //Bake
-
-        //Store (GPU)
-
-        //Save
+        if (WindowInstance != null)
+        {
+            EditorUtility.SetDirty(WindowInstance);
+        }
     }
 
     void FillTextureRow(int rowIndex, Vector3[] data)
@@ -228,6 +329,8 @@ public class AnimationTextureBakerWindow : EditorWindow
         WindowInstance.autoRepaintOnSceneChange = true;
         WindowInstance.Show();
     }
+
+    Mesh selectedMesh = null;
 
     private void OnSelectionChange()
     {
@@ -253,6 +356,12 @@ public class AnimationTextureBakerWindow : EditorWindow
 
             Object[] allAssets = AssetDatabase.LoadAllAssetsAtPath(path);
             animations = allAssets.Where(x => x.GetType() == typeof(AnimationClip) && !x.name.StartsWith("__preview")).ToList();
+
+            List<Object> allMeshes = allAssets.Where(x => x.GetType() == typeof(Mesh)).ToList();
+            if (allMeshes.Count > 0)
+            {
+                selectedMesh = allMeshes[0] as Mesh;
+            }
 
             for (int i = 0; i < animations.Count; i++)
             {
