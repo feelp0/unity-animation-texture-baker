@@ -173,8 +173,6 @@ public class AnimationTextureBakerWindow : EditorWindow
 
             GUILayout.Space(30);
 
-            GUILayout.Label(m_SelectedSkinnedMesh.localBounds.max.ToString());
-
             m_UseInternalNamingConvention = EditorGUILayout.Toggle("Internal naming convention", m_UseInternalNamingConvention);
 
             if (m_UseInternalNamingConvention)
@@ -404,7 +402,7 @@ public class AnimationTextureBakerWindow : EditorWindow
     {
         WindowInstance = GetWindow<AnimationTextureBakerWindow>();
         WindowInstance.titleContent.tooltip = "Animation Texture Baker";
-        WindowInstance.titleContent.text = "Coso che cosa il coso";
+        WindowInstance.titleContent.text = "Animation Texture Baker";
         WindowInstance.autoRepaintOnSceneChange = true;
         WindowInstance.Show();
     }
