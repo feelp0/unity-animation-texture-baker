@@ -72,11 +72,12 @@ Shader "Loopcifer/Tests/VertexAnimationShader"
 
                     float frame = (IN.id + 0.5) / _AnimationTexture_TexelSize.z;
                     float time = _Time.y / _AnimationsCount;
-					float3 animTex = tex2Dlod(_AnimationTexture, float4(frame, time, 0, 0)).xyz;
-                    //IN.posOS.xyz = (animTex.xyz * 2 - 1) * 8;
-                    //Same here as compute shader comment. This solution seems to be the best but it's not working right now
-                    IN.posOS.xyz -= animTex.xyz ; //????????????????
-                    //input.posOS.xyz = lerp(input.posOS.xyz, animTex, _Debug);
+
+					float4 animationTexture = tex2Dlod(_AnimationTexture, float4(frame, time, 0, 0));
+                    float3 animationData = animationTexture.xyz; //remap to -1 to 1 value
+
+                    float3 addPos = IN.posOS.xyz + animationData;
+                    IN.posOS.xyz = lerp(addPos, animationData, animationTexture.w);
 
                     VertexPositionInputs vertexInput = GetVertexPositionInputs(IN.posOS.xyz);
 					
